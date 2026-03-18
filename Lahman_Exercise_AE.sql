@@ -126,15 +126,43 @@ from
 ((select distinct on (yearid) yearid, teamid
 from teams
 where yearid between 1970 and 2016
-order by yearid, w desc)
-union all
+order by yearid, w desc, wswin desc)
+intersect
 (select yearid, teamid
 from teams
 where yearid between 1970 and 2016
-and WSWin = 'Y'))
-group by yearid, teamid
-having count(*) = 2;
--- There were 10 years between 1970 and 2016 where the team with the most wins also won the world series.
+and WSWin = 'Y'));
+-- There were 12 years between 1970 and 2016 where the team with the most wins also won the world series.
+
+WITH ws_winners AS (
+SELECT 
+teamid,
+yearid,
+w,
+wswin
+FROM teams
+WHERE yearid BETWEEN 1970 AND 2016
+AND wswin = 'Y'
+),
+most_wins AS (
+SELECT
+yearid,
+MAX(w) AS max_wins
+FROM teams
+WHERE yearid BETWEEN 1970 AND 2016
+GROUP BY yearid
+),
+winners_with_most_wins AS (
+SELECT
+w.yearid, teamid, w
+FROM ws_winners w
+INNER JOIN most_wins m
+ON w.yearid = m.yearid 
+AND w = max_wins
+)
+SELECT 
+-- what percent of the time did the World Series winner also have the most number of wins in that year?
+ROUND(100.0 * (SELECT COUNT(*) FROM winners_with_most_wins) / (SELECT COUNT(*) FROM ws_winners), 1);
 
 
 /* 6. Which managers have won the TSN Manager of the Year award in both the National League (NL) and the American League (AL)? 
@@ -160,18 +188,37 @@ order by managername, yearid;
 
 /* 7. Which pitcher was the least efficient in 2016 in terms of salary / strikeouts? Only consider pitchers who started at least 10 games (across all teams). 
  Note that pitchers often play for more than one team in a season, so be sure that you are counting all stats for each player. */
-select pe.namefirst || ' ' || pe.namelast as playername, round(sum(cast(s.salary as numeric))/sum(cast(p.so as numeric)), 2) as efficiency
-from pitching p
-inner join salaries s
-using(playerid)
-inner join people pe
-using(playerid)
-where p.yearid = 2016
-group by playerid, playername
-having min(gs) >= 10
-order by efficiency
-limit 1;
--- Robbie Ray was the least efficient pitcher in 2016 in terms of salary / strikeouts.
+
+WITH full_pitching AS (
+SELECT
+playerid,
+SUM(so) AS so,
+SUM(gs) AS gs
+FROM pitching
+WHERE yearid = 2016
+GROUP BY playerid
+HAVING sum(gs) >= 10
+),
+full_salaries AS (
+SELECT
+playerid,
+SUM(salary) AS salary
+FROM salaries
+WHERE yearid = 2016
+GROUP BY playerid
+)
+SELECT 
+namefirst || ' ' || namelast AS full_name, p.playerid,
+ROUND(salary::numeric / so, 2)::money AS salary_per_strikeout,
+salary::numeric::money,
+so as strikeouts
+FROM full_pitching p
+INNER JOIN full_salaries s
+ON p.playerid = s.playerid
+INNER JOIN people pe
+ON p.playerid = pe.playerid
+ORDER BY salary_per_strikeout desc;
+--Matt Cain was the least efficient pitcher in 2016 in terms of salary / strikeouts.
 
 /* 8. Find all players who have had at least 3000 career hits. Report those players' names, total number of hits, and the year they were inducted into the hall of fame 
 (If they were not inducted into the hall of fame, put a null in that column.) Note that a player being inducted into the hall of fame is indicated by a 'Y' 
@@ -204,33 +251,39 @@ using(playerid)
 group by playerid, playername
 having count(teamid) = 2;
 
+
 /* 10. Find all players who hit their career highest number of home runs in 2016. Consider only players who have played in the league for at least 10 years, 
 and who hit at least one home run in 2016. Report the players' first and last names and the number of home runs they hit in 2016. */
-with eligibleplayers as (
-(select playerid 
-from batting b
-group by playerid
-having max(yearid) - min(yearid) + 1 >= 10)
-intersect
-(select playerid
-from batting b
-where yearid = 2016
-and hr > 0)
+with full_batting as (
+select playerid, yearid, sum(hr) as homeruns
+from batting
+group by playerid, yearid
 ),
 careerhighhr as (
-select distinct on (playerid) playerid, yearid, sum(hr) as homeruns
-from batting b
-group by playerid, yearid
-order by playerid, sum(hr) desc
+select playerid, max(homeruns) as homeruns
+from full_batting 
+group by playerid
+),
+eligibleplayers as (
+	(select playerid 
+	from batting b
+	group by playerid
+	having count(distinct yearid) >= 10)
+intersect
+	(select playerid
+	from batting b
+	where yearid = 2016
+	and hr > 0)
 )
-select p.namefirst || ' ' || p.namelast as playername, yearid, homeruns
-from careerhighhr 
-inner join eligibleplayers
+select p.namefirst || ' ' || p.namelast as playername, yearid, c.homeruns
+from careerhighhr c
+inner join eligibleplayers e
 using(playerid)
+inner join full_batting f
+using(playerid, homeruns)
 inner join people p
 using(playerid)
-where yearid = 2016;
-
+where f.yearid = 2016;
 
 -- Open-ended questions:
 
